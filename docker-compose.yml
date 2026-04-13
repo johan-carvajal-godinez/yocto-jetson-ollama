@@ -1,0 +1,102 @@
+# ==============================================================================
+# docker-compose.yml — Orquestación del contenedor Yocto Build
+#
+# Uso:
+#   docker-compose up -d          # Iniciar contenedor en background
+#   docker-compose exec builder bash  # Entrar al contenedor
+#   docker-compose down           # Detener y eliminar
+# ==============================================================================
+
+version: "3.8"
+
+services:
+  builder:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: yocto-jetson-ollama:kirkstone
+    container_name: yocto_jetson_build
+
+    # ─── Perfiles de CPU y Memoria ──────────────────────────────────────────
+    # Un build de Yocto completo puede tomar 6-12 horas
+    # Se recomienda: ≥16GB RAM, ≥8 CPU cores, ≥200GB disco
+    cpus: "${BUILD_CPUS:-8}"
+    mem_limit: "${BUILD_MEM:-16g}"
+    shm_size: "4g"
+
+    # ─── Variables de entorno ───────────────────────────────────────────────
+    environment:
+      - YOCTO_RELEASE=kirkstone
+      - MACHINE=jetson-nano
+      - BB_NUMBER_THREADS=${BB_NUMBER_THREADS:-8}
+      - PARALLEL_MAKE=-j${PARALLEL_MAKE:-8}
+      - LANG=en_US.UTF-8
+      - LC_ALL=en_US.UTF-8
+
+    # ─── Volúmenes persistentes ─────────────────────────────────────────────
+    # CRÍTICO: montar estos volúmenes para no perder el sstate-cache entre builds
+    # Un build desde cero puede tomar >8 horas. Con sstate-cache: <30 minutos.
+    volumes:
+      # Cache de descargas (~20-50GB): fuentes, tarballs
+      - yocto-downloads:/yocto/downloads
+
+      # Shared State Cache (~30-80GB): artefactos pre-compilados
+      - yocto-sstate:/yocto/sstate-cache
+
+      # Directorio de trabajo del build (~50-100GB)
+      - yocto-build:/yocto/build
+
+      # Capas clonadas (~2-5GB)
+      - yocto-layers:/yocto/layers
+
+      # Imágenes generadas (acceso desde el host)
+      - ./output:/yocto/build/tmp/deploy/images
+
+    # ─── Configuración del sistema ──────────────────────────────────────────
+    security_opt:
+      - seccomp:unconfined   # Necesario para algunas herramientas de build
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+
+    # Reinicio automático si el contenedor falla
+    restart: unless-stopped
+
+    # Modo interactivo (útil para desarrollo)
+    stdin_open: true
+    tty: true
+
+    # ─── Healthcheck ────────────────────────────────────────────────────────
+    healthcheck:
+      test: ["CMD", "which", "bitbake"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+# ─── Volúmenes nombrados (persistentes entre ejecuciones) ────────────────────
+volumes:
+  yocto-downloads:
+    name: yocto_downloads_cache
+    labels:
+      description: "Yocto downloads cache - tarballs y fuentes"
+      size_estimate: "20-50GB"
+
+  yocto-sstate:
+    name: yocto_sstate_cache
+    labels:
+      description: "Yocto shared state cache - artefactos compilados"
+      size_estimate: "30-80GB"
+
+  yocto-build:
+    name: yocto_build_dir
+    labels:
+      description: "Directorio de build activo de Yocto"
+      size_estimate: "50-100GB"
+
+  yocto-layers:
+    name: yocto_layers_cloned
+    labels:
+      description: "Capas de Yocto clonadas de git"
+      size_estimate: "2-5GB"
